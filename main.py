@@ -1,79 +1,126 @@
 import os
 import time
+import configparser
+from pathlib import Path
+from typing import Optional
 from loguru import logger
-from yandex_disk import YandexDiskConnector
-from config import config_dict
+from dotenv import dotenv_values
+from yandex_disk import YandexDisk
+import hashlib
 
-def configure_logger(log_file):
-    """Настраивает логгер для записи в файл."""
+
+def setup_config() -> Optional[dict]:
+    """Читает конфигурацию из config.ini и .env."""
+    config = configparser.ConfigParser()
+    config.read("config.ini")
+
+    if not config.has_section("Settings"):
+        print("Error: config.ini is missing [Settings] section")
+        return None
+
+    settings = config["Settings"]
+    env = dotenv_values(".env")
+
+    result = {
+        "local_folder": settings.get("local_folder"),
+        "cloud_folder": settings.get("cloud_folder"),
+        "sync_interval": settings.getint("sync_interval", 60),
+        "log_file": settings.get("log_file", "sync.log"),
+        "token": env.get("YANDEX_TOKEN")
+    }
+
+    if not result["local_folder"] or not os.path.isdir(result["local_folder"]):
+        print(f"Error: Invalid or missing local_folder: {result['local_folder']}")
+        return None
+    if not result["token"]:
+        print("Error: Missing YANDEX_TOKEN in .env")
+        return None
+
+    return result
+
+
+def setup_logger(log_file: str) -> None:
+    """Настраивает логгер."""
     logger.remove()
-    logger.add(log_file, format="{time} | {level} | {message}", level="DEBUG")  # DEBUG для диагностики
+    logger.add(log_file, format="{time} | {level} | {message}", level="INFO")
 
-def synchronize_files(connector, local_folder, cloud_folder):
-    """Синхронизирует файлы между локальной папкой и Яндекс.Диском."""
+
+def get_file_hash(file_path: str) -> str:
+    """Вычисляет MD5-хэш файла."""
+    hash_md5 = hashlib.md5()
     try:
-        logger.debug(f"Получение списка файлов из облака: {cloud_folder}")
-        cloud_files_list = connector.get_info(verbose=False)
-        cloud_files = {file["name"]: file["modified"] for file in cloud_files_list or []}
-        logger.debug(f"Найдено {len(cloud_files)} файлов в облаке: {list(cloud_files.keys())}")
+        with open(file_path, "rb") as f:
+            for chunk in iter(lambda: f.read(4096), b""):
+                hash_md5.update(chunk)
+        return hash_md5.hexdigest()
+    except IOError:
+        return ""
 
-        local_files = {f for f in os.listdir(local_folder) if os.path.isfile(os.path.join(local_folder, f))}
-        logger.debug(f"Найдено {len(local_files)} локальных файлов: {local_files}")
+
+def synchronize_files(disk: YandexDisk, local_folder: str, logger) -> None:
+    """Синхронизирует файлы между локальной папкой и облаком."""
+    try:
+        cloud_files = disk.get_info()
+        local_files = {
+            f: os.path.getmtime(os.path.join(local_folder, f))
+            for f in os.listdir(local_folder)
+            if os.path.isfile(os.path.join(local_folder, f))
+        }
+
+        # Храним хэши файлов для проверки содержимого
+        file_hashes = {}
 
         for cloud_file in cloud_files:
             if cloud_file not in local_files:
-                connector.delete(cloud_file)
-                logger.info(f"Deleted {cloud_file} from cloud storage")
+                if disk.delete(cloud_file):
+                    logger.info(f"Deleted from cloud: {cloud_file}")
+                else:
+                    logger.error(f"Failed to delete from cloud: {cloud_file}")
 
-        for local_file in local_files:
+        for local_file, local_mtime in local_files.items():
             local_path = os.path.join(local_folder, local_file)
-            try:
-                local_mtime = os.path.getmtime(local_path)
-                cloud_mtime = 0
-                if local_file in cloud_files:
-                    try:
-                        cloud_mtime = time.mktime(time.strptime(cloud_files[local_file], "%Y-%m-%dT%H:%M:%S%z"))
-                    except ValueError as e:
-                        logger.error(f"Ошибка парсинга времени для {local_file}: {e}")
-                        continue
+            cloud_mtime = cloud_files.get(local_file, 0)
 
-                if local_file not in cloud_files:
-                    connector.load(local_path)
-                    logger.info(f"Uploaded {local_file} to cloud storage")
-                elif local_mtime > cloud_mtime:
-                    connector.reload(local_path)
-                    logger.info(f"Updated {local_file} in cloud storage")
-            except (OSError, IOError) as e:
-                logger.error(f"Error processing {local_file}: {e}")
+            if local_file not in cloud_files:
+                if disk.load(local_path):
+                    logger.info(f"Uploaded to cloud: {local_file}")
+                else:
+                    logger.error(f"Failed to upload: {local_file}")
+            elif local_mtime > cloud_mtime + 5:  # Допуск 5 секунд
+                # Проверяем хэш файла, чтобы избежать лишних обновлений
+                current_hash = get_file_hash(local_path)
+                if local_file not in file_hashes or file_hashes.get(local_file) != current_hash:
+                    if disk.reload(local_path):
+                        logger.info(f"Updated in cloud: {local_file}")
+                        file_hashes[local_file] = current_hash
+                    else:
+                        logger.error(f"Failed to update: {local_file}")
+                else:
+                    logger.debug(f"Skipped update for {local_file}: content unchanged")
 
     except Exception as e:
-        logger.error(f"Synchronization error: {e}")
-        raise  # Поднимаем исключение для диагностики
+        logger.error(f"Sync error: {str(e)}")
+
 
 def main():
-    """Основная функция для запуска синхронизации."""
+    """Основной метод программы."""
+    config = setup_config()
+    if not config:
+        return
+
+    setup_logger(config["log_file"])
+    logger.info(f"Started syncing folder: {config['local_folder']}")
+
     try:
-        config = config_dict
-        configure_logger(config["log_file"])
-        logger.info(f"Starting synchronization for folder: {config['local_folder']}")
-        logger.debug(f"Конфигурация: {config}")
-
-        try:
-            connector = YandexDiskConnector(config["token"], config["cloud_folder"])
-        except ValueError as e:
-            logger.error(f"Failed to initialize YandexDiskConnector: {e}")
-            return
-
-        synchronize_files(connector, config["local_folder"], config["cloud_folder"])
-
-        while True:
-            time.sleep(config["sync_interval"])
-            synchronize_files(connector, config["local_folder"], config["cloud_folder"])
-
+        disk = YandexDisk(config["token"], config["cloud_folder"])
     except ValueError as e:
-        logger.error(f"Configuration error: {e}")
-    except Exception as e:
-        logger.error(f"Unexpected error: {e}")
+        print(f"Error: {e}")
+        return
+
+    while True:
+        synchronize_files(disk, config["local_folder"], logger)
+        time.sleep(config["sync_interval"])
+
 
 if __name__ == "__main__":
     main()
