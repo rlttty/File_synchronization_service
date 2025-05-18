@@ -1,85 +1,127 @@
 import requests
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict
 from urllib.parse import unquote, quote
 from datetime import datetime
 
+
+class YandexDiskError(Exception):
+    """Custom exception for Yandex Disk operations."""
+    pass
+
+
 class YandexDisk:
     BASE_URL = "https://cloud-api.yandex.net/v1/disk/resources"
+    REQUEST_TIMEOUT = 30  # seconds
 
     def __init__(self, token: str, cloud_folder: str):
-        """Инициализация с токеном и папкой в облаке."""
+        """Initializes with token and cloud folder."""
         self.headers = {"Authorization": f"OAuth {token}"}
         self.cloud_folder = cloud_folder.lstrip("/")
         self._ensure_cloud_folder()
 
     def _ensure_cloud_folder(self) -> None:
-        """Создает папку в облаке, если она не существует."""
+        """Creates cloud folder if it doesn't exist."""
         try:
             response = requests.get(
                 f"{self.BASE_URL}?path=/{self.cloud_folder}",
-                headers=self.headers
+                headers=self.headers,
+                timeout=self.REQUEST_TIMEOUT
             )
             if response.status_code == 404:
-                requests.put(
+                response = requests.put(
                     f"{self.BASE_URL}?path=/{self.cloud_folder}",
-                    headers=self.headers
+                    headers=self.headers,
+                    timeout=self.REQUEST_TIMEOUT
                 )
+                if response.status_code != 201:
+                    raise YandexDiskError(f"Failed to create cloud folder: {response.text}")
+        except (requests.Timeout, requests.ConnectionError) as e:
+            error_msg = f"Network error initializing cloud folder: {str(e)}"
+            print(error_msg)
+            raise YandexDiskError(error_msg)
         except requests.RequestException as e:
-            raise ValueError(f"Failed to initialize cloud folder: {e}")
+            error_msg = f"Failed to initialize cloud folder: {str(e)}"
+            print(error_msg)
+            raise YandexDiskError(error_msg)
 
     def load(self, local_path: str) -> bool:
-        """Загружает новый файл в облако."""
+        """Uploads a new file to the cloud."""
         try:
             file_name = Path(local_path).name
             encoded_file_name = quote(file_name)
-            upload_url = requests.get(
+            upload_response = requests.get(
                 f"{self.BASE_URL}/upload?path=/{self.cloud_folder}/{encoded_file_name}&overwrite=true",
-                headers=self.headers
+                headers=self.headers,
+                timeout=self.REQUEST_TIMEOUT
             )
-            if upload_url.status_code != 200:
-                raise ValueError(f"Failed to get upload URL: {upload_url.text}")
-            upload_href = upload_url.json().get("href")
-            with open(local_path, "rb") as f:
-                response = requests.put(upload_href, files={"file": f})
+            if upload_response.status_code != 200:
+                raise YandexDiskError(f"Failed to get upload URL: {upload_response.text}")
+
+            upload_href = upload_response.json().get("href")
+            with open(local_path, "rb") as file:
+                response = requests.put(
+                    upload_href,
+                    files={"file": file},
+                    timeout=self.REQUEST_TIMEOUT
+                )
             if response.status_code != 201:
-                raise ValueError(f"Upload failed: {response.text}")
+                raise YandexDiskError(f"Upload failed: {response.text}")
             return True
-        except (requests.RequestException, IOError, ValueError) as e:
-            print(f"Load error for {file_name}: {str(e)}")  # Временное логирование
+        except (requests.Timeout, requests.ConnectionError) as e:
+            error_msg = f"Network error uploading {file_name}: {str(e)}"
+            print(error_msg)
+            return False
+        except (requests.RequestException, IOError, YandexDiskError) as e:
+            error_msg = f"Load error for {file_name}: {str(e)}"
+            print(error_msg)
             return False
 
     def reload(self, local_path: str) -> bool:
-        """Перезаписывает файл в облаке."""
+        """Overwrites a file in the cloud."""
         return self.load(local_path)
 
     def delete(self, filename: str) -> bool:
-        """Удаляет файл из облака."""
+        """Deletes a file from the cloud."""
         try:
             encoded_filename = quote(filename)
             response = requests.delete(
                 f"{self.BASE_URL}?path=/{self.cloud_folder}/{encoded_filename}",
-                headers=self.headers
+                headers=self.headers,
+                timeout=self.REQUEST_TIMEOUT
             )
             return response.status_code in (204, 202)
-        except requests.RequestException:
+        except (requests.Timeout, requests.ConnectionError) as e:
+            error_msg = f"Network error deleting {filename}: {str(e)}"
+            print(error_msg)
+            return False
+        except requests.RequestException as e:
+            error_msg = f"Failed to delete {filename}: {str(e)}"
+            print(error_msg)
             return False
 
     def get_info(self) -> Dict[str, float]:
-        """Возвращает словарь {имя_файла: время_последнего_изменения}."""
+        """Returns dictionary of {filename: last_modified_time}."""
         try:
             response = requests.get(
                 f"{self.BASE_URL}?path=/{self.cloud_folder}&fields=_embedded.items.name,_embedded.items.modified",
-                headers=self.headers
+                headers=self.headers,
+                timeout=self.REQUEST_TIMEOUT
             )
-            files = response.json().get("_embedded", {}).get("items", [])
+            response.raise_for_status()
+            items = response.json().get("_embedded", {}).get("items", [])
             result = {}
-            for f in files:
-                name = unquote(f["name"])
-                modified_str = f["modified"]
-                # Парсим время без временной зоны, предполагая UTC
+            for item in items:
+                name = unquote(item["name"])
+                modified_str = item["modified"]
                 modified = datetime.strptime(modified_str[:19], "%Y-%m-%dT%H:%M:%S").timestamp()
                 result[name] = modified
             return result
-        except (requests.RequestException, KeyError, ValueError):
+        except (requests.Timeout, requests.ConnectionError) as e:
+            error_msg = f"Network error getting cloud info: {str(e)}"
+            print(error_msg)
+            return {}
+        except (requests.RequestException, KeyError, ValueError) as e:
+            error_msg = f"Failed to get cloud info: {str(e)}"
+            print(error_msg)
             return {}

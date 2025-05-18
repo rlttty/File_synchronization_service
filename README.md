@@ -14,28 +14,29 @@ File_synchronization_service, это программа, позволяющая 
 ## How to start the program:
 1. клонируйте проект с GitHub на свой локальный компьютер;
 2. в папке проекта найдите файл .env.template и переименуйте на файл .env;
-3. данном файле заполните те переменные нужными данными;
+3. данном файле заполните токен к вашему API;
+3.1. в конфигурационном файле config.ini, вам нужно заполнить те переменные нужными данными: путь к локальной папке, путь к папке от вашего облачного хранилище;
 4. распакуйте, установите зависимости содержимое файла requirements.txt;
 5. после того, как вы установили все значения, запустите программу. для этого можете запустить файл main.py.
 
 
-# File Synchronization Service
+# File_Synchronization_Service.
 
-## Description
+## Description:
 
-File Synchronization Service is a program that enables synchronization between a user's local computer and cloud storage. This service automatically updates and synchronizes files between the personal computer and the cloud.
+FILE_SYNCHRONISATION_SERVICE, this is a program that allows you to do synchronization on your user's computer with cloud storage. 
+This service allows you to automatically update and coordinate files between a personal computer and a cloud.
 
-## Program Capabilities
-
-1. The program synchronizes a local folder, detects files, and uploads them to the cloud storage.
-2. If the program detects a modified file, it overwrites the file in the cloud.
-3. The program also allows for the deletion of files from the cloud storage;
+## Program Capabilites:
+1. The program synchronizing the local folder, finds files there and uploads to the disk;
+2. If the program detects a changed file, it rewrites it into a cloud;
+3. The program also allows you to delete files from the cloud storage;
 4. You can receive information about all files, their last change and date creation.
 
-## How to Start the Program
-
-1. Clone the project from GitHub to your local computer.
-2. In the project folder, locate the `.env.template` file and rename it to `.env`.
-3. Fill in the required variables in the `.env` file with the appropriate data.
-4. Install the dependencies listed in the `requirements.txt` file.
-5. Once all values are set, run the program by executing the `main.py` file.
+## How to Start the Program:
+1. Clon the project with GitHub to your local computer;
+2. In the project folder, find the .env.template file and rename to the .env file;
+3. This file fill out the token to your API;
+3.1. In the configuration file config.ini, you need to fill out those variables with the necessary data: the path to the local folder, the path to the folder from your cloud storage;
+4. Put, set dependencies to the contents of the REQUREMENTS.TXT file;
+5. After you have set all values, run the program. To do this, you can start the Main.py file.
